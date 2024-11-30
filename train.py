@@ -4,11 +4,11 @@ import torch
 import torch.nn as nn
 import torchvision
 import model
-
+import torch.optim as optim
 
 def train(seed=0):
     # Configurable parameters
-    epochs = 10
+    epochs = 20
     batch_size = 512
     momentum = 0.9
     weight_decay = 0.256
@@ -186,7 +186,7 @@ def preprocess_data(data, device, dtype):
     return data
 
 
-def load_cifar10(device, dtype, data_dir="~/data"):
+def load_cifar10(device, dtype, data_dir="/run/media/robo/Data/datasets/"):
     train = torchvision.datasets.CIFAR10(root=data_dir, download=True)
     valid = torchvision.datasets.CIFAR10(root=data_dir, train=False)
 
