@@ -204,12 +204,17 @@ class Trainer:
             print(f"{epoch:5} {batch_count:8d} {train_time:19.2f} {avg_train_loss:13.4f} "
                   f"{valid_acc:22.4f} {current_lr:16.6f}")
 
-        return {
+        import json
+        results = {
             'train_losses': train_losses,
             'valid_accs': valid_accs,
             'learning_rates': learning_rates,
             'final_acc': valid_acc
         }
+        with open(f'training_results_{optimizer_name}.json', 'w') as f:
+            json.dump(results, f)
+
+        return results
 
     def _init_sgd(self, model):
         weights_params = [p for p in model.parameters() if p.requires_grad and len(p.shape) > 1]

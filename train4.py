@@ -54,8 +54,8 @@ def main():
         print(f"\nFinal validation accuracy ({optimizer_name}): {results[optimizer_name]['final_acc']:.4f}")
 
     # Plot and save the results
-    plotter.plot_results(results)
-    print("\nResults have been plotted and saved to 'training_results.png'")
+    # plotter.plot_results(results) # Moved to trainer
+    print(f"\nResults have been saved. Use plotter to generate plots.")
 
 if __name__ == "__main__":
     main()
