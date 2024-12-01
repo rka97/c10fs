@@ -82,7 +82,7 @@ def main():
     config.data_dir = args.data_dir
 
     trainer = Trainer(config)
-    optimizers = ['adamw']
+    optimizers = ['sgd', 'adamw']
     results = {}
 
     for optimizer_name in optimizers:
