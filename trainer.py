@@ -1,3 +1,5 @@
+import json
+import numpy as np
 import time
 import copy
 import torch
@@ -5,6 +7,10 @@ import torch.nn as nn
 import torchvision
 from torch.utils.data import DataLoader, TensorDataset
 import model
+
+
+def _to_numpy(x):
+    return [y.item() if torch.is_tensor(y) else y for y in x]
 
 class CifarTransform:
     def __init__(self, crop_size=(32, 32)):
@@ -15,7 +21,7 @@ class CifarTransform:
         # Random crop
         data = self._random_crop(data, self.crop_size)
         # Random horizontal flip of first half
-        data[:len(data)//2] = torch.flip(data[:len(data)//2], [-1])
+        data[: len(data) // 2] = torch.flip(data[: len(data) // 2], [-1])
         return data, targets
 
     @staticmethod
@@ -27,6 +33,7 @@ class CifarTransform:
         y = torch.randint(h - crop_h, size=(1,))[0]
         return data[:, :, y : y + crop_h, x : x + crop_w]
 
+
 class Trainer:
     def __init__(self, config):
         self.config = config
@@ -34,20 +41,38 @@ class Trainer:
 
     def _get_lr_schedule(self, optimizer_name):
         if optimizer_name == "sgd":
-            return torch.cat([
-                torch.linspace(0, self.config.lr_max, self.config.warmup_steps),
-                torch.linspace(self.config.lr_max, self.config.lr_final, self.config.decay_steps),
-            ])
+            return torch.cat(
+                [
+                    torch.linspace(0, self.config.lr_max, self.config.warmup_steps),
+                    torch.linspace(
+                        self.config.lr_max,
+                        self.config.lr_final,
+                        self.config.decay_steps,
+                    ),
+                ]
+            )
         elif optimizer_name == "adamw":
-            return torch.cat([
-                torch.linspace(0, self.config.lr_max * 10, self.config.warmup_steps),
-                torch.linspace(self.config.lr_max * 10, self.config.lr_final, self.config.decay_steps),
-            ])
+            return torch.cat(
+                [
+                    torch.linspace(
+                        0, self.config.lr_max * 10, self.config.warmup_steps
+                    ),
+                    torch.linspace(
+                        self.config.lr_max * 10,
+                        self.config.lr_final,
+                        self.config.decay_steps,
+                    ),
+                ]
+            )
 
     def preprocess_data(self, data):
         data = torch.tensor(data, device=self.config.device).to(self.config.dtype)
-        mean = torch.tensor([125.31, 122.95, 113.87], device=self.config.device).to(self.config.dtype)
-        std = torch.tensor([62.99, 62.09, 66.70], device=self.config.device).to(self.config.dtype)
+        mean = torch.tensor([125.31, 122.95, 113.87], device=self.config.device).to(
+            self.config.dtype
+        )
+        std = torch.tensor([62.99, 62.09, 66.70], device=self.config.device).to(
+            self.config.dtype
+        )
         data = (data - mean) / std
         data = data.permute(0, 3, 1, 2)  # Permute data from NHWC to NCHW format
         return data
@@ -97,15 +122,15 @@ class Trainer:
             # For SGD, we keep the separate learning rates for weights and biases
             for i, param_group in enumerate(optimizer.param_groups):
                 # First group is weights, second is biases
-                param_group['lr'] = current_lr * (64.0 if i == 1 else 1.0)
+                param_group["lr"] = current_lr * (64.0 if i == 1 else 1.0)
         elif isinstance(optimizer, torch.optim.AdamW):
             for i, param_group in enumerate(optimizer.param_groups):
-                param_group['lr'] = current_lr * (64.0 if i == 1 else 1.0)
+                param_group["lr"] = current_lr * (64.0 if i == 1 else 1.0)
                 # param_group['lr'] = 1e-6
         else:
             # For others, use a single learning rate
             for param_group in optimizer.param_groups:
-                param_group['lr'] = current_lr
+                param_group["lr"] = current_lr
 
     def train(self, optimizer_name, seed=0):
         torch.manual_seed(seed)
@@ -138,7 +163,9 @@ class Trainer:
         self.lr_schedule = self._get_lr_schedule(optimizer_name)
 
         print(f"Preprocessing: {time.perf_counter() - start_time:.2f} seconds")
-        print("\nepoch    batch    train time [sec]    train loss    validation accuracy    learning rate")
+        print(
+            "\nepoch    batch    train time [sec]    train loss    validation accuracy    learning rate"
+        )
 
         train_time = 0.0
         batch_count = 0
@@ -160,7 +187,7 @@ class Trainer:
 
                 # Update learning rate
                 self._update_lr(optimizer, batch_count)
-                current_lr = optimizer.param_groups[0]['lr']
+                current_lr = optimizer.param_groups[0]["lr"]
                 learning_rates.append(current_lr)
 
                 optimizer.zero_grad()
@@ -191,7 +218,9 @@ class Trainer:
             valid_model.eval()
             with torch.no_grad():
                 for data, target in self.valid_loader:
-                    data, target = data.to(self.config.device), target.to(self.config.device)
+                    data, target = data.to(self.config.device), target.to(
+                        self.config.device
+                    )
                     logits1 = valid_model(data)
                     logits2 = valid_model(torch.flip(data, [-1]))
                     logits = torch.mean(torch.stack([logits1, logits2], dim=0), dim=0)
@@ -201,37 +230,67 @@ class Trainer:
             valid_acc = torch.mean(torch.cat(valid_correct)).item()
             valid_accs.append(valid_acc)
 
-            print(f"{epoch:5} {batch_count:8d} {train_time:19.2f} {avg_train_loss:13.4f} "
-                  f"{valid_acc:22.4f} {current_lr:16.6f}")
-
-        import json
+            print(
+                f"{epoch:5} {batch_count:8d} {train_time:19.2f} {avg_train_loss:13.4f} "
+                f"{valid_acc:22.4f} {current_lr:16.6f}"
+            )
         results = {
-            'train_losses': train_losses,
-            'valid_accs': valid_accs,
-            'learning_rates': learning_rates,
-            'final_acc': valid_acc
+            "train_losses": _to_numpy(train_losses),
+            "valid_accs": _to_numpy(valid_accs),
+            "learning_rates": _to_numpy(learning_rates),
+            "final_acc": valid_acc,
         }
-        with open(f'training_results_{optimizer_name}.json', 'w') as f:
+        with open(f"training_results_{optimizer_name}.json", "w") as f:
             json.dump(results, f)
 
         return results
 
     def _init_sgd(self, model):
-        weights_params = [p for p in model.parameters() if p.requires_grad and len(p.shape) > 1]
-        bias_params = [p for p in model.parameters() if p.requires_grad and len(p.shape) <= 1]
+        weights_params = [
+            p for p in model.parameters() if p.requires_grad and len(p.shape) > 1
+        ]
+        bias_params = [
+            p for p in model.parameters() if p.requires_grad and len(p.shape) <= 1
+        ]
 
-        optimizer = torch.optim.SGD([
-            {'params': weights_params, 'lr': 0.0, 'weight_decay': self.config.weight_decay},
-            {'params': bias_params, 'lr': 0.0, 'weight_decay': self.config.weight_decay_bias}
-        ], momentum=self.config.momentum, nesterov=True)
+        optimizer = torch.optim.SGD(
+            [
+                {
+                    "params": weights_params,
+                    "lr": 0.0,
+                    "weight_decay": self.config.weight_decay,
+                },
+                {
+                    "params": bias_params,
+                    "lr": 0.0,
+                    "weight_decay": self.config.weight_decay_bias,
+                },
+            ],
+            momentum=self.config.momentum,
+            nesterov=True,
+        )
 
         return optimizer
 
     def _init_adamw(self, model):
-        weights_params = [p for p in model.parameters() if p.requires_grad and len(p.shape) > 1]
-        bias_params = [p for p in model.parameters() if p.requires_grad and len(p.shape) <= 1]
+        weights_params = [
+            p for p in model.parameters() if p.requires_grad and len(p.shape) > 1
+        ]
+        bias_params = [
+            p for p in model.parameters() if p.requires_grad and len(p.shape) <= 1
+        ]
         return torch.optim.AdamW(
-            [{'params': weights_params, 'lr': 0.0, 'weight_decay': self.config.weight_decay},
-             {'params': bias_params, 'lr': 0.0, 'weight_decay': self.config.weight_decay_bias}],
-            betas=(0.9, 0.999)
+            [
+                {
+                    "params": weights_params,
+                    "lr": 0.0,
+                    "weight_decay": self.config.weight_decay,
+                },
+                {
+                    "params": bias_params,
+                    "lr": 0.0,
+                    "weight_decay": self.config.weight_decay_bias,
+                },
+            ],
+            betas=(0.9, 0.999),
         )

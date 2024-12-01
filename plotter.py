@@ -1,7 +1,6 @@
-import matplotlib.pyplot as plt
-
 import json
 import matplotlib.pyplot as plt
+import argparse
 
 def plot_results(results_file):
     with open(results_file, 'r') as f:
@@ -38,4 +37,11 @@ def plot_results(results_file):
 
     plt.tight_layout()
     plt.savefig(results_file.replace('.json', '.png'))
+    plt.show()
     plt.close()
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='Plot training results')
+    parser.add_argument('results_file', help='Path to results JSON file')
+    args = parser.parse_args()
+    plot_results(args.results_file)

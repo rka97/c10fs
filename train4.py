@@ -6,7 +6,7 @@ from trainer import Trainer
 class TrainingConfig:
     def __init__(self):
         # Training parameters
-        self.epochs = 10
+        self.epochs = 1
         self.batch_size = 512
         self.momentum = 0.9
         self.weight_decay = 0.256
