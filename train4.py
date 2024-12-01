@@ -1,5 +1,5 @@
 import argparse
-import matplotlib.pyplot as plt
+import plotter
 import torch
 from trainer import Trainer
 
@@ -26,44 +26,6 @@ class TrainingConfig:
 
         # Data directory
         self.data_dir = "/tmp/datasets/"
-
-def plot_results(results_dict):
-    plt.figure(figsize=(15, 5))
-
-    # Plot training losses
-    plt.subplot(1, 3, 1)
-    for optimizer_name, results in results_dict.items():
-        plt.plot(results['train_losses'], label=f'{optimizer_name}')
-    plt.xlabel('Epoch')
-    plt.ylabel('Training Loss')
-    plt.title('Training Loss vs Epoch')
-    plt.legend()
-    plt.grid(True)
-
-    # Plot validation accuracies
-    plt.subplot(1, 3, 2)
-    for optimizer_name, results in results_dict.items():
-        plt.plot(results['valid_accs'], label=f'{optimizer_name}')
-    plt.xlabel('Epoch')
-    plt.ylabel('Validation Accuracy')
-    plt.title('Validation Accuracy vs Epoch')
-    plt.legend()
-    plt.grid(True)
-
-    # Plot learning rates
-    plt.subplot(1, 3, 3)
-    for optimizer_name, results in results_dict.items():
-        plt.plot(results['learning_rates'], label=f'{optimizer_name}')
-    plt.xlabel('Batch')
-    plt.ylabel('Learning Rate')
-    plt.title('Learning Rate Schedule')
-    plt.legend()
-    plt.grid(True)
-    plt.yscale('log')
-
-    plt.tight_layout()
-    plt.savefig('training_results.png')
-    plt.close()
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Training script with configurable data directory')
@@ -92,7 +54,7 @@ def main():
         print(f"\nFinal validation accuracy ({optimizer_name}): {results[optimizer_name]['final_acc']:.4f}")
 
     # Plot and save the results
-    plot_results(results)
+    plotter.plot_results(results)
     print("\nResults have been plotted and saved to 'training_results.png'")
 
 if __name__ == "__main__":
