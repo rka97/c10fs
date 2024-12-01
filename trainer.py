@@ -141,7 +141,10 @@ class Trainer:
         # Initialize dataset and model
         train_dataset = self.prepare_data()
         weights = model.patch_whitening(train_dataset.tensors[0][:10000, :, 4:-4, 4:-4])
-        train_model = model.Model(weights, c_in=3, c_out=10, scale_out=0.125)
+        if self.config.test_model:
+            train_model = model.SmallResNetBagOfTricks(weights, c_in=3, c_out=10, scale_out=0.125)
+        else:
+            train_model = model.Model(weights, c_in=3, c_out=10, scale_out=0.125)
         train_model.to(self.config.dtype)
 
         # Handle BatchNorm precision
