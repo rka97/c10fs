@@ -6,6 +6,7 @@ import torch
 import torch.nn as nn
 import torchvision
 from torch.utils.data import DataLoader, TensorDataset
+from torch.nn.parallel import DistributedDataParallel as DDP
 import model
 
 
