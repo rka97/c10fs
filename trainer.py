@@ -133,7 +133,7 @@ class Trainer:
             for param_group in optimizer.param_groups:
                 param_group["lr"] = current_lr
 
-    def train(self, optimizer_name, seed=0):
+    def train(self, optimizer_name, seed=0, rank=0, world_size=1):
         torch.manual_seed(seed)
         torch.backends.cudnn.benchmark = True
 
@@ -155,6 +155,9 @@ class Trainer:
 
         train_model.to(self.config.device)
         valid_model = copy.deepcopy(train_model)
+
+        # Initialize model with DDP
+        train_model = DDP(train_model, device_ids=[rank])
 
         # Initialize optimizer
         if optimizer_name == "sgd":
@@ -197,10 +200,6 @@ class Trainer:
                 optimizer.zero_grad()
                 logits = train_model(data)
                 loss = model.label_smoothing_loss(logits, target, alpha=0.2)
-
-                # # Add gradient clipping for AdamW
-                # if optimizer_name == "adamw":
-                #     torch.nn.utils.clip_grad_norm_(train_model.parameters(), max_norm=1.0)
 
                 loss_val = loss.sum().item()
                 epoch_losses.append(loss_val)
