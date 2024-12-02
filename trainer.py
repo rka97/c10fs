@@ -7,7 +7,7 @@ import torch.nn as nn
 import torchvision
 from torch.utils.data import DataLoader, TensorDataset
 from torch.nn.parallel import DistributedDataParallel as DDP
-import model
+import model as model_lib
 
 
 def _to_numpy(x):
@@ -133,37 +133,49 @@ class Trainer:
             for param_group in optimizer.param_groups:
                 param_group["lr"] = current_lr
 
+    def synchronize_parameters(self, models):
+        """Synchronize parameters across all models."""
+        params = [list(model.parameters()) for model in models]
+        for param_list in zip(*params):
+            avg_param = torch.mean(torch.stack(param_list), dim=0)
+            for param in param_list:
+                param.data.copy_(avg_param)
+
     def train(self, optimizer_name, seed=0, rank=0, world_size=1):
         torch.manual_seed(seed)
         torch.backends.cudnn.benchmark = True
 
         start_time = time.perf_counter()
 
-        # Initialize dataset and model
+        # Initialize dataset and models for each client
         train_dataset = self.prepare_data()
-        weights = model.patch_whitening(train_dataset.tensors[0][:10000, :, 4:-4, 4:-4])
-        if self.config.test_model:
-            train_model = model.SmallResNetBagOfTricks(weights, c_in=3, c_out=10, scale_out=0.125)
-        else:
-            train_model = model.Model(weights, c_in=3, c_out=10, scale_out=0.125)
-        train_model.to(self.config.dtype)
+        weights = model_lib.patch_whitening(train_dataset.tensors[0][:10000, :, 4:-4, 4:-4])
+        models = []
+        for _ in range(self.config.num_clients):
+            if self.config.test_model:
+                model_instance = model_lib.SmallResNetBagOfTricks(weights, c_in=3, c_out=10, scale_out=0.125)
+            else:
+                model_instance = model_lib.Model(weights, c_in=3, c_out=10, scale_out=0.125)
+            model_instance.to(self.config.dtype)
+            for module in model_instance.modules():
+                if isinstance(module, nn.BatchNorm2d):
+                    module.float()
+            model_instance.to(self.config.device)
+            models.append(model_instance)
 
-        # Handle BatchNorm precision
-        for module in train_model.modules():
-            if isinstance(module, nn.BatchNorm2d):
-                module.float()
-
-        train_model.to(self.config.device)
-        valid_model = copy.deepcopy(train_model)
+        # Initialize valid_model
+        valid_model = copy.deepcopy(models[0])
+        valid_model.eval()
 
         # Initialize model with DDP
-        train_model = DDP(train_model, device_ids=[rank])
+        if world_size > 1:
+            models = [DDP(model, device_ids=[rank]) for model in models]
 
         # Initialize optimizer
         if optimizer_name == "sgd":
-            optimizer = self._init_sgd(train_model)
+            optimizers = [self._init_sgd(model) for model in models]
         elif optimizer_name == "adamw":
-            optimizer = self._init_adamw(train_model)
+            optimizers = [self._init_adamw(model) for model in models]
         else:
             raise ValueError(f"Unknown optimizer: {optimizer_name}")
 
@@ -186,28 +198,35 @@ class Trainer:
             start_time = time.perf_counter()
 
             # Training
-            train_model.train()
+            for model in models:
+                model.train()
             epoch_losses = []
             for data, target in self.train_loader:
                 data, target = self.transform((data, target))
                 batch_count += 1
 
                 # Update learning rate
-                self._update_lr(optimizer, batch_count)
-                current_lr = optimizer.param_groups[0]["lr"]
+                self._update_lr(optimizers[0], batch_count)
+                current_lr = optimizers[0].param_groups[0]["lr"]
                 learning_rates.append(current_lr)
 
-                optimizer.zero_grad()
-                logits = train_model(data)
-                loss = model.label_smoothing_loss(logits, target, alpha=0.2)
+                # Perform local steps
+                for h in range(self.config.local_steps):
+                    for k, (model, optimizer) in enumerate(zip(models, optimizers)):
+                        optimizer.zero_grad()
+                        logits = model(data)
+                        loss = model_lib.label_smoothing_loss(logits, target, alpha=0.2)
+                        loss_val = loss.sum().item()
+                        # print(f"At step {h} the loss is {loss_val} on model {k}")
+                        epoch_losses.append(loss_val)
+                        loss.sum().backward()
+                        optimizer.step()
 
-                loss_val = loss.sum().item()
-                epoch_losses.append(loss_val)
-                loss.sum().backward()
-                optimizer.step()
+                # Synchronize parameters
+                self.synchronize_parameters(models)
 
                 if batch_count % self.config.ema_update_freq == 0:
-                    self.update_ema(train_model, valid_model, self.config.ema_rho)
+                    self.update_ema(models[0], valid_model, self.config.ema_rho)
 
             if torch.cuda.is_available():
                 torch.cuda.synchronize()
@@ -218,14 +237,14 @@ class Trainer:
 
             # Validation
             valid_correct = []
-            valid_model.eval()
+            models[0].eval()
             with torch.no_grad():
                 for data, target in self.valid_loader:
                     data, target = data.to(self.config.device), target.to(
                         self.config.device
                     )
-                    logits1 = valid_model(data)
-                    logits2 = valid_model(torch.flip(data, [-1]))
+                    logits1 = models[0](data)
+                    logits2 = models[0](torch.flip(data, [-1]))
                     logits = torch.mean(torch.stack([logits1, logits2], dim=0), dim=0)
                     correct = logits.max(dim=1)[1] == target
                     valid_correct.append(correct.type(torch.float64))

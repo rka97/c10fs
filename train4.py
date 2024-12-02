@@ -6,17 +6,22 @@ from trainer import Trainer
 class TrainingConfig:
     def __init__(self):
         # Training parameters
-        self.epochs = 1
+        self.epochs = 2
         self.batch_size = 512
         self.momentum = 0.9
         self.weight_decay = 0.256
         self.weight_decay_bias = 0.004
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.dtype = torch.float32
+        self.test_model = False
 
         # EMA parameters
         self.ema_update_freq = 5
         self.ema_rho = 0.99 ** self.ema_update_freq
+
+        # Local SGD parameters
+        self.num_clients = 4
+        self.local_steps = 5
 
         # Learning rate parameters
         self.lr_max = 2e-3
@@ -36,12 +41,15 @@ def parse_args():
                       type=int,
                       default=42,
                       help='Random seed')
+    parser.add_argument('--test-model', action='store_true', help='Use a smaller test model')
+
     return parser.parse_args()
 
 def main():
     args = parse_args()
     config = TrainingConfig()
     config.data_dir = args.data_dir
+    config.test_model = args.test_model
 
     trainer = Trainer(config)
     optimizers = ['sgd', 'adamw']
