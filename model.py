@@ -112,8 +112,8 @@ class ResNetBagOfTricks(nn.Module):
         conv1.weight.requires_grad = False
 
         self.conv1 = conv1
-        self.conv2 = conv_bn_relu(c, 32, kernel_size=(1, 1), padding=0)
-        self.conv3 = conv_pool_norm_act(32, 64)
+        self.conv2 = conv_bn_relu(c, 64, kernel_size=(1, 1), padding=0)
+        self.conv3 = conv_pool_norm_act(64, 128)
         self.conv4 = conv_bn_relu(128, 128)
         self.conv5 = conv_bn_relu(128, 128)
         self.conv6 = conv_pool_norm_act(128, 256)
@@ -142,9 +142,12 @@ class SmallResNetBagOfTricks(nn.Module):
     def __init__(self, first_layer_weights, c_in, c_out, scale_out):
         super().__init__()
         c = first_layer_weights.size(0)
+
+        # First conv layer with fixed weights
         conv1 = nn.Conv2d(c_in, c, kernel_size=(3, 3), padding=(1, 1), bias=False)
         conv1.weight.data = first_layer_weights
         conv1.weight.requires_grad = False
+
         self.conv1 = conv1
         self.linear = nn.Linear(c * 32 * 32, c_out, bias=False)  # Output from conv3
         self.scale_out = scale_out

@@ -1,4 +1,6 @@
 {
     "optimizer": "adamw",
-    "num_local_steps": 1
+    "num_local_steps": 1,
+    "outer_optimizer": "sgd",
+    "outer_lr": 1.0
 }

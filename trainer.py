@@ -133,16 +133,39 @@ class Trainer:
             for param_group in optimizer.param_groups:
                 param_group["lr"] = current_lr
 
-    def synchronize_parameters(self, models):
-        """Synchronize parameters across all models."""
-        params = [list(model.parameters()) for model in models]
-        for param_list in zip(*params):
-            avg_param = torch.mean(torch.stack(param_list), dim=0)
-            for param in param_list:
-                param.data.copy_(avg_param)
+    def _init_outer_optimizer(self, model, optimizer_name, lr):
+        """Initialize the outer optimizer"""
+        if optimizer_name == "sgd":
+            return torch.optim.SGD(model.parameters(), lr=lr)
+        elif optimizer_name == "adamw":
+            return torch.optim.AdamW(model.parameters(), lr=lr)
+        else:
+            raise ValueError(f"Unknown outer optimizer: {optimizer_name}")
 
-    def train(self, optimizer_name, seed=0, rank=0, world_size=1, num_local_steps=5):
+    def compute_parameter_delta(self, prev_params, current_models):
+        """Compute the parameter delta between current average and previous parameters"""
+        # Get current average parameters
+        current_params = []
+        for param_lists in zip(*[list(model.parameters()) for model in current_models]):
+            avg_param = torch.mean(torch.stack(param_lists), dim=0)
+            current_params.append(avg_param)
+
+        # Compute delta
+        deltas = []
+        for prev, curr in zip(prev_params, current_params):
+            deltas.append(curr - prev)
+
+        return deltas, current_params
+
+    def apply_outer_update(self, model, delta_params):
+        """Apply the outer optimization update"""
+        for param, delta in zip(model.parameters(), delta_params):
+            if param.requires_grad:
+                param.grad = -delta  # Negative because we want to move in the delta direction
+
+    def train(self, optimizer_name, seed=0, rank=0, world_size=1, num_local_steps=5, outer_optimizer="sgd", outer_lr=1.0):
         self.config.local_steps = num_local_steps
+        outer_opt = None
         torch.manual_seed(seed)
         torch.backends.cudnn.benchmark = True
 
@@ -223,8 +246,25 @@ class Trainer:
                         loss.sum().backward()
                         optimizer.step()
 
-                # Synchronize parameters
-                self.synchronize_parameters(models)
+                # Store previous round's parameters
+                if outer_opt is None:
+                    # Initialize outer optimizer with the first model
+                    outer_opt = self._init_outer_optimizer(models[0], outer_optimizer, outer_lr)
+                    prev_params = [param.detach().clone() for param in models[0].parameters()]
+
+                # Compute parameter delta and get new average
+                delta_params, prev_params = self.compute_parameter_delta(prev_params, models)
+
+                # Apply outer optimization step
+                outer_opt.zero_grad()
+                self.apply_outer_update(models[0], delta_params)
+                outer_opt.step()
+
+                # Synchronize all models to the result of outer optimization
+                with torch.no_grad():
+                    for model in models[1:]:
+                        for p_target, p_source in zip(model.parameters(), models[0].parameters()):
+                            p_target.copy_(p_source)
 
                 if batch_count % self.config.ema_update_freq == 0:
                     self.update_ema(models[0], valid_model, self.config.ema_rho)
