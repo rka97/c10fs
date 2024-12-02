@@ -105,7 +105,8 @@ class Trainer:
             shuffle=False,
         )
 
-        self.epoch_length = len(train_data) // self.config.batch_size
+        self.epoch_length = len(train_data) // (self.config.batch_size * self.config.num_clients)
+        print(f"Epoch length: {self.epoch_length}")
 
         return train_dataset
 
@@ -134,6 +135,7 @@ class Trainer:
             # For others, use a single learning rate
             for param_group in optimizer.param_groups:
                 param_group["lr"] = current_lr
+        return current_lr
 
     def _init_outer_optimizer(self, model, optimizer_name, lr):
         """Initialize the outer optimizer"""
@@ -179,6 +181,7 @@ class Trainer:
             model: Updated model after local steps
         """
         losses = []
+        learning_rates = []
 
         for h in range(num_steps):
             try:
@@ -189,7 +192,8 @@ class Trainer:
 
 
             # Update learning rate
-            self._update_lr(optimizer, batch_count+h)
+            lr = self._update_lr(optimizer, batch_count+h)
+            learning_rates.append(lr)
 
             data, target = self.transform((data, target))
             optimizer.zero_grad()
@@ -200,10 +204,9 @@ class Trainer:
             loss.sum().backward()
             optimizer.step()
 
-        return losses, model
+        return losses, model, learning_rates
 
-    def train(self, optimizer_name, seed=0, rank=0, world_size=1, num_local_steps=5, outer_optimizer="sgd", outer_lr=1.0):
-        self.config.local_steps = num_local_steps
+    def train(self, seed=0, rank=0, world_size=1):
         outer_opt = None
         torch.manual_seed(seed)
         torch.backends.cudnn.benchmark = True
@@ -235,18 +238,23 @@ class Trainer:
             models = [DDP(model, device_ids=[rank]) for model in models]
 
         # Initialize optimizer
-        if optimizer_name == "sgd":
+        if self.config.optimizer == "sgd":
             optimizers = [self._init_sgd(model) for model in models]
-        elif optimizer_name == "adamw":
+        elif self.config.optimizer == "adamw":
             optimizers = [self._init_adamw(model) for model in models]
         else:
-            raise ValueError(f"Unknown optimizer: {optimizer_name}")
+            raise ValueError(f"Unknown optimizer: {self.config.optimizer}")
 
-        self.lr_schedule = self._get_lr_schedule(optimizer_name)
+        self.lr_schedule = self._get_lr_schedule(self.config.optimizer)
         # Initialize outer optimizer with the first model
-        outer_opt = self._init_outer_optimizer(models[0], outer_optimizer, outer_lr)
+        outer_opt = self._init_outer_optimizer(
+            models[0], 
+            self.config.outer_optimizer,
+            self.config.outer_lr
+        )
 
         print(f"Preprocessing: {time.perf_counter() - start_time:.2f} seconds")
+        # FIXME we currently count batches, there should be a better counting method
         print(
             "\nepoch    batch    train time [sec]    train loss    validation accuracy    learning rate"
         )
@@ -276,22 +284,23 @@ class Trainer:
 
                 # Perform local steps for each client
                 all_step_losses = np.zeros((self.config.num_clients, self.config.local_steps))
+                all_learning_rates = np.zeros((self.config.num_clients, self.config.local_steps))
                 for k, (model, optimizer) in enumerate(zip(models, optimizers)):
-                    step_losses, models[k] = self.perform_local_steps(
+                    step_losses, models[k], learning_rates = self.perform_local_steps(
                         model,
                         optimizer,
                         self.config.local_steps,
                         batch_count
                     )
                     all_step_losses[k, :] = step_losses
+                    all_learning_rates[k, :] = learning_rates
 
                 # Average losses across clients and extend to epoch losses
                 epoch_losses.extend(np.mean(all_step_losses, axis=0))
+                learning_rates.extend(np.mean(all_learning_rates, axis=0))
 
                 # Update batch count and learning rate tracking
                 batch_count += self.config.local_steps
-                current_lr = optimizers[0].param_groups[0]["lr"]
-                learning_rates.extend([current_lr] * self.config.local_steps)
 
                 # Apply outer optimization step
                 outer_opt.zero_grad()
@@ -335,7 +344,7 @@ class Trainer:
 
             print(
                 f"{epoch:5} {batch_count:8d} {train_time:19.2f} {avg_train_loss:13.4f} "
-                f"{valid_acc:22.4f} {current_lr:16.6f}"
+                f"{valid_acc:22.4f} {learning_rates[-1]:16.6f}"
             )
         results = {
             "train_losses": _to_numpy(train_losses),
@@ -343,7 +352,7 @@ class Trainer:
             "learning_rates": _to_numpy(learning_rates),
             "final_acc": valid_accs[-1],
         }
-        with open(f"training_results_{optimizer_name}.json", "w") as f:
+        with open(f"training_results_{self.config.optimizer}.json", "w") as f:
             json.dump(results, f)
 
         return results
