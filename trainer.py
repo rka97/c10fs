@@ -141,7 +141,8 @@ class Trainer:
             for param in param_list:
                 param.data.copy_(avg_param)
 
-    def train(self, optimizer_name, seed=0, rank=0, world_size=1):
+    def train(self, optimizer_name, seed=0, rank=0, world_size=1, num_local_steps=5):
+        self.config.local_steps = num_local_steps
         torch.manual_seed(seed)
         torch.backends.cudnn.benchmark = True
 

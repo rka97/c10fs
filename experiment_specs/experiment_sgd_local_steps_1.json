@@ -1,0 +1,4 @@
+{
+    "optimizer": "sgd",
+    "num_local_steps": 1
+}

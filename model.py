@@ -146,15 +146,11 @@ class SmallResNetBagOfTricks(nn.Module):
         conv1.weight.data = first_layer_weights
         conv1.weight.requires_grad = False
         self.conv1 = conv1
-        self.conv2 = conv_bn_relu(c, 64, kernel_size=(1, 1), padding=0)
-        self.conv3 = conv_pool_norm_act(64, 128)
-        self.linear = nn.Linear(64 * 16 * 16, c_out, bias=False)  # Output from conv3
+        self.linear = nn.Linear(c * 32 * 32, c_out, bias=False)  # Output from conv3
         self.scale_out = scale_out
 
     def forward(self, x):
         x = self.conv1(x)
-        x = self.conv2(x)
-        x = self.conv3(x)
         x = x.view(x.size(0), -1)  # Flatten for linear layer
         x = self.linear(x)
         x = self.scale_out * x

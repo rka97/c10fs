@@ -45,6 +45,10 @@ def parse_args():
 
     return parser.parse_args()
 
+import os
+import json
+from datetime import datetime
+
 def main():
     args = parse_args()
     config = TrainingConfig()
@@ -52,18 +56,27 @@ def main():
     config.test_model = args.test_model
 
     trainer = Trainer(config)
-    optimizers = ['sgd', 'adamw']
-    results = {}
+    experiment_specs_dir = 'experiment_specs'
+    experiment_results_dir = 'experiment_results'
+    os.makedirs(experiment_results_dir, exist_ok=True)
 
-    for optimizer_name in optimizers:
-        print(f"\nTraining with {optimizer_name.upper()}:")
-        print("=" * 50)
-        results[optimizer_name] = trainer.train(optimizer_name, seed=args.seed)
-        print(f"\nFinal validation accuracy ({optimizer_name}): {results[optimizer_name]['final_acc']:.4f}")
+    for experiment_file in os.listdir(experiment_specs_dir):
+        if experiment_file.endswith('.json'):
+            with open(os.path.join(experiment_specs_dir, experiment_file), 'r') as f:
+                experiment_spec = json.load(f)
 
-    # Plot and save the results
-    # plotter.plot_results(results) # Moved to trainer
-    print(f"\nResults have been saved. Use plotter to generate plots.")
+            print(f"\nTraining with experiment: {experiment_file}")
+            print("=" * 50)
+            results = trainer.train(experiment_spec['optimizer'], seed=args.seed, num_local_steps=experiment_spec['num_local_steps'])
+            results['metadata'] = experiment_spec
+
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            result_file_name = f"{timestamp}_{experiment_file}"
+            with open(os.path.join(experiment_results_dir, result_file_name), 'w') as f:
+                json.dump(results, f)
+
+            print(f"\nFinal validation accuracy ({experiment_spec['optimizer']}): {results['final_acc']:.4f}")
+            print(f"\nResults have been saved to {result_file_name}. Use plotter to generate plots.")
 
 if __name__ == "__main__":
     main()

@@ -1,0 +1,4 @@
+{
+    "optimizer": "adamw",
+    "num_local_steps": 50
+}
