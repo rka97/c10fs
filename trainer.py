@@ -105,6 +105,8 @@ class Trainer:
             shuffle=False,
         )
 
+        self.epoch_length = len(train_data) // self.config.batch_size
+
         return train_dataset
 
     def update_ema(self, train_model, valid_model, rho):
@@ -163,6 +165,43 @@ class Trainer:
             if param.requires_grad:
                 param.grad = -delta  # Negative because we want to move in the delta direction
 
+    def perform_local_steps(self, model, optimizer, num_steps, batch_count):
+        """Perform local training steps for a single client
+
+        Args:
+            model: The client's model
+            optimizer: The client's optimizer
+            num_steps: Number of local steps to perform
+            batch_count: Current batch count for learning rate scheduling
+
+        Returns:
+            list: Loss values for each step
+            model: Updated model after local steps
+        """
+        losses = []
+
+        for h in range(num_steps):
+            try:
+                data, target = next(self.train_iterator)
+            except StopIteration:
+                self.train_iterator = iter(self.train_loader)
+                data, target = next(self.train_iterator)
+
+
+            # Update learning rate
+            self._update_lr(optimizer, batch_count+h)
+
+            data, target = self.transform((data, target))
+            optimizer.zero_grad()
+            logits = model(data)
+            loss = model_lib.label_smoothing_loss(logits, target, alpha=0.2)
+            loss_val = loss.sum().item()
+            losses.append(loss_val)
+            loss.sum().backward()
+            optimizer.step()
+
+        return losses, model
+
     def train(self, optimizer_name, seed=0, rank=0, world_size=1, num_local_steps=5, outer_optimizer="sgd", outer_lr=1.0):
         self.config.local_steps = num_local_steps
         outer_opt = None
@@ -204,6 +243,8 @@ class Trainer:
             raise ValueError(f"Unknown optimizer: {optimizer_name}")
 
         self.lr_schedule = self._get_lr_schedule(optimizer_name)
+        # Initialize outer optimizer with the first model
+        outer_opt = self._init_outer_optimizer(models[0], outer_optimizer, outer_lr)
 
         print(f"Preprocessing: {time.perf_counter() - start_time:.2f} seconds")
         print(
@@ -225,38 +266,37 @@ class Trainer:
             for model in models:
                 model.train()
             epoch_losses = []
-            for data, target in self.train_loader:
-                data, target = self.transform((data, target))
-                batch_count += 1
 
-                # Update learning rate
-                self._update_lr(optimizers[0], batch_count)
-                current_lr = optimizers[0].param_groups[0]["lr"]
-                learning_rates.append(current_lr)
+            # Create main iterator
+            self.train_iterator = iter(self.train_loader)
 
-                # Perform local steps
-                for h in range(self.config.local_steps):
-                    for k, (model, optimizer) in enumerate(zip(models, optimizers)):
-                        optimizer.zero_grad()
-                        logits = model(data)
-                        loss = model_lib.label_smoothing_loss(logits, target, alpha=0.2)
-                        loss_val = loss.sum().item()
-                        # print(f"At step {h} the loss is {loss_val} on model {k}")
-                        epoch_losses.append(loss_val)
-                        loss.sum().backward()
-                        optimizer.step()
-
+            for _ in range(self.epoch_length):
                 # Store previous round's parameters
-                if outer_opt is None:
-                    # Initialize outer optimizer with the first model
-                    outer_opt = self._init_outer_optimizer(models[0], outer_optimizer, outer_lr)
-                    prev_params = [param.detach().clone() for param in models[0].parameters()]
+                prev_params = [param.detach().clone() for param in models[0].parameters()]
 
-                # Compute parameter delta and get new average
-                delta_params, prev_params = self.compute_parameter_delta(prev_params, models)
+                # Perform local steps for each client
+                all_step_losses = np.zeros((self.config.num_clients, self.config.local_steps))
+                for k, (model, optimizer) in enumerate(zip(models, optimizers)):
+                    step_losses, models[k] = self.perform_local_steps(
+                        model,
+                        optimizer,
+                        self.config.local_steps,
+                        batch_count
+                    )
+                    all_step_losses[k, :] = step_losses
+
+                # Average losses across clients and extend to epoch losses
+                epoch_losses.extend(np.mean(all_step_losses, axis=0))
+
+                # Update batch count and learning rate tracking
+                batch_count += self.config.local_steps
+                current_lr = optimizers[0].param_groups[0]["lr"]
+                learning_rates.extend([current_lr] * self.config.local_steps)
 
                 # Apply outer optimization step
                 outer_opt.zero_grad()
+                # Compute parameter delta and get new average
+                delta_params, prev_params = self.compute_parameter_delta(prev_params, models)
                 self.apply_outer_update(models[0], delta_params)
                 outer_opt.step()
 
@@ -301,7 +341,7 @@ class Trainer:
             "train_losses": _to_numpy(train_losses),
             "valid_accs": _to_numpy(valid_accs),
             "learning_rates": _to_numpy(learning_rates),
-            "final_acc": valid_acc,
+            "final_acc": valid_accs[-1],
         }
         with open(f"training_results_{optimizer_name}.json", "w") as f:
             json.dump(results, f)

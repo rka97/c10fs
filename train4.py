@@ -25,8 +25,8 @@ class TrainingConfig:
         self.ema_rho = 0.99**self.ema_update_freq
 
         # Local SGD parameters
-        self.num_clients = 2
-        self.local_steps = 5
+        self.num_clients = 4
+        self.local_steps = 50
 
         # Learning rate parameters
         self.lr_max = 2e-3
