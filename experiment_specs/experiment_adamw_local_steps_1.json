@@ -1,6 +1,6 @@
 {
     "num_local_steps": 1,
     "outer_optimizer": "adamw",
-    "outer_lr": 1.0,
+    "outer_lr": [0.1, 0.2, 0.7, 0.9, 1.0, 2.0, 3.0, 4.0, 10.0],
     "num_clients": 4
 }

@@ -139,16 +139,16 @@ class Trainer:
                 param_group["lr"] = current_lr
         return current_lr
 
-    def _init_outer_optimizer(self, model, optimizer_name, lr):
+    def _init_outer_optimizer(self, model):
         """Initialize the outer optimizer"""
-        if optimizer_name == "sgd":
-            return torch.optim.SGD(model.parameters(), lr=lr)
-        elif optimizer_name == "sgd_nesterov":
-            return torch.optim.SGD(model.parameters(), lr=lr, momentum=self.config.outer_momentum, nesterov=True)
-        elif optimizer_name == "adamw":
-            return torch.optim.AdamW(model.parameters(), lr=lr)
+        if self.config.outer_optimizer == "sgd":
+            return torch.optim.SGD(model.parameters(), lr=self.config.outer_lr)
+        elif self.config.outer_optimizer == "sgd_nesterov":
+            return torch.optim.SGD(model.parameters(), lr=self.config.outer_lr, momentum=self.config.outer_momentum, nesterov=True)
+        elif self.config.outer_optimizer == "adamw":
+            return torch.optim.AdamW(model.parameters(), lr=self.config.outer_lr)
         else:
-            raise ValueError(f"Unknown outer optimizer: {optimizer_name}")
+            raise ValueError(f"Unknown outer optimizer: {self.config.outer_optimizer}")
 
     def compute_parameter_delta(self, prev_params, current_models):
         """Compute the parameter delta between current average and previous parameters"""
@@ -163,7 +163,7 @@ class Trainer:
         for prev, curr in zip(prev_params, current_params):
             deltas.append(curr - prev)
 
-        return deltas, current_params
+        return deltas
 
     def apply_outer_update(self, model, delta_params):
         """Apply the outer optimization update"""
@@ -253,12 +253,8 @@ class Trainer:
             raise ValueError(f"Unknown optimizer: {self.config.optimizer}")
 
         self.lr_schedule = self._get_lr_schedule(self.config.optimizer)
-        # Initialize outer optimizer with the first model
-        outer_opt = self._init_outer_optimizer(
-            models[0], 
-            self.config.outer_optimizer,
-            self.config.outer_lr
-        )
+        # Initialize outer optimizer
+        outer_opt = self._init_outer_optimizer(models[0])
 
         print(f"Preprocessing: {time.perf_counter() - start_time:.2f} seconds")
         # FIXME we currently count batches, there should be a better counting method
@@ -312,7 +308,7 @@ class Trainer:
                 # Apply outer optimization step
                 outer_opt.zero_grad()
                 # Compute parameter delta and get new average
-                delta_params, prev_params = self.compute_parameter_delta(prev_params, models)
+                delta_params = self.compute_parameter_delta(prev_params, models)
                 self.apply_outer_update(models[0], delta_params)
                 outer_opt.step()
 

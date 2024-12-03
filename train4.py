@@ -51,12 +51,8 @@ class TrainingConfig:
         # Set batch size based on num_clients
         self.batch_size = self.base_batch_size // self.num_clients
 
-    def update_from_spec(self, spec_file):
-        """Update config parameters from a specification file"""
-        with open(spec_file, "r") as f:
-            spec = json.load(f)
-
-        # Update parameters from spec
+    def update_from_spec(self, spec):
+        """Update config parameters from a specification."""
         if "outer_optimizer" in spec:
             self.outer_optimizer = spec["outer_optimizer"]
         if "outer_lr" in spec:
@@ -93,7 +89,7 @@ def parse_args():
 def run_experiment(
     process_id: int,
     num_gpus: int,
-    experiment_queue: List[str],
+    experiment_queue: List[Dict],
     args,
     base_config: TrainingConfig,
 ):
@@ -103,13 +99,10 @@ def run_experiment(
     if gpu_id >= 0:
         torch.cuda.set_device(gpu_id)
 
-    experiment_specs_dir = "experiment_specs"
     experiment_results_dir = "experiment_results"
     os.makedirs(experiment_results_dir, exist_ok=True)
 
-    for experiment_file in experiment_queue:
-        experiment_path = os.path.join(experiment_specs_dir, experiment_file)
-
+    for experiment_spec in experiment_queue:
         # Create a new config for this experiment
         config = TrainingConfig()
         config.data_dir = args.data_dir
@@ -121,10 +114,10 @@ def run_experiment(
             config.num_processes = 2
         config.device = torch.device(f"cuda:{gpu_id}")
 
-        # Update config from spec file
-        config.update_from_spec(experiment_path)
+        # Update config from experiment spec
+        config.update_from_spec(experiment_spec)
 
-        print(f"\nGPU {gpu_id} training with experiment: {experiment_file}")
+        print(f"\nGPU {gpu_id} training with experiment: {experiment_spec['outer_optimizer']} - LR: {experiment_spec['outer_lr']}")
         print("=" * 50)
         print(f"Batch size per client: {config.batch_size}")
         print(f"Number of clients: {config.num_clients}")
@@ -136,18 +129,16 @@ def run_experiment(
         trainer = Trainer(config)
         results = trainer.train(seed=args.seed)
 
-        # Load spec for metadata
-        with open(experiment_path, "r") as f:
-            experiment_spec = json.load(f)
+        # Add experiment config as metadata
         results["metadata"] = experiment_spec
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        result_file_name = f"{timestamp}_{experiment_file}"
+        result_file_name = f"{timestamp}_{experiment_spec}"
         with open(os.path.join(experiment_results_dir, result_file_name), "w") as f:
             json.dump(results, f)
 
         print(
-            f"\nGPU {gpu_id} - Final validation accuracy ({experiment_spec['optimizer']}): {results['final_acc']:.4f}"
+            f"\nGPU {gpu_id} - Final validation accuracy ({experiment_spec['outer_optimizer']}): {results['final_acc']:.4f}"
         )
         print(f"\nResults have been saved to {result_file_name}.")
 
@@ -157,9 +148,6 @@ def distribute_experiments(
 ) -> List[List[str]]:
     """Distribute experiments across available processes"""
     process_queues = [[] for _ in range(num_processes)]
-
-    # Sort experiments to ensure deterministic distribution
-    experiment_files.sort()
 
     # Distribute experiments as evenly as possible
     for i, exp_file in enumerate(experiment_files):
@@ -177,19 +165,39 @@ def main():
     base_config = TrainingConfig()
 
     # Get experiments to run
+    experiment_specs = []
     if args.experiment:
         if not os.path.exists(args.experiment):
             raise ValueError(f"Experiment file {args.experiment} does not exist")
-        experiment_files = [os.path.basename(args.experiment)]
-        experiment_specs_dir = os.path.dirname(args.experiment)
-        if not experiment_specs_dir:
-            experiment_specs_dir = "experiment_specs"
+        with open(args.experiment, 'r') as f:
+            spec = json.load(f)
+            # Create separate experiment for each learning rate
+            base_lr = spec.pop('outer_lr')
+            if isinstance(base_lr, list):
+                for lr in base_lr:
+                    exp = spec.copy()
+                    exp['outer_lr'] = lr
+                    experiment_specs.append(exp)
+            else:
+                spec['outer_lr'] = base_lr
+                experiment_specs.append(spec)
     else:
         # Get all available experiments
         experiment_specs_dir = "experiment_specs"
-        experiment_files = [
-            f for f in os.listdir(experiment_specs_dir) if f.endswith(".json")
-        ]
+        for f in os.listdir(experiment_specs_dir):
+            if f.endswith(".json"):
+                with open(os.path.join(experiment_specs_dir, f), 'r') as spec_file:
+                    spec = json.load(spec_file)
+                    # Create separate experiment for each learning rate
+                    base_lr = spec.pop('outer_lr')
+                    if isinstance(base_lr, list):
+                        for lr in base_lr:
+                            exp = spec.copy()
+                            exp['outer_lr'] = lr
+                            experiment_specs.append(exp)
+                    else:
+                        spec['outer_lr'] = base_lr
+                        experiment_specs.append(spec)
 
     # Get number of available GPUs and processes
     num_gpus = torch.cuda.device_count()
@@ -201,10 +209,10 @@ def main():
         print(f"Found {num_gpus} GPUs")
 
     print(f"Creating {num_processes} processes")
-    print(f"Found {len(experiment_files)} experiments")
+    print(f"There are {len(experiment_specs)} experiments to run.")
 
     # Distribute experiments across processes
-    process_queues = distribute_experiments(experiment_files, num_processes)
+    process_queues = distribute_experiments(experiment_specs, num_processes)
 
     # Create processes
     processes = []
