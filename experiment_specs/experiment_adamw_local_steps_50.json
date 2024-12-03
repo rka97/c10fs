@@ -1,4 +1,6 @@
 {
-    "optimizer": "adamw",
-    "num_local_steps": 50
+    "num_local_steps": 50,
+    "outer_optimizer": "adamw",
+    "outer_lr": 1.0,
+    "num_clients": 4
 }

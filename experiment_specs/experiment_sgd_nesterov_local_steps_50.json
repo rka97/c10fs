@@ -1,0 +1,7 @@
+{
+    "optimizer": "sgd",
+    "num_local_steps": 50,
+    "outer_optimizer": "sgd_nesterov",
+    "outer_lr": 0.7,
+    "outer_momentum": 0.9
+}

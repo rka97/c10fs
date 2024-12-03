@@ -143,6 +143,8 @@ class Trainer:
         """Initialize the outer optimizer"""
         if optimizer_name == "sgd":
             return torch.optim.SGD(model.parameters(), lr=lr)
+        elif optimizer_name == "sgd_nesterov":
+            return torch.optim.SGD(model.parameters(), lr=lr, momentum=self.config.outer_momentum, nesterov=True)
         elif optimizer_name == "adamw":
             return torch.optim.AdamW(model.parameters(), lr=lr)
         else:

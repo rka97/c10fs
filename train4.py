@@ -14,8 +14,8 @@ import time
 class TrainingConfig:
     def __init__(self):
         # Training parameters
-        self.epochs = 2
-        self.optimizer = "sgd"  # Base optimizer for clients
+        self.epochs = 20
+        self.optimizer = "adamw"  # Base optimizer for clients
         self.base_batch_size = 512  # This will be divided by num_clients
 
         self.num_processes = 2  # Number of parallel processes to run
@@ -37,6 +37,7 @@ class TrainingConfig:
         self.local_steps = 50
         self.outer_optimizer = "sgd"
         self.outer_lr = 1.0
+        self.outer_momentum = 0.9  # Default momentum for Nesterov SGD
 
         # Learning rate parameters
         self.lr_max = 2e-3
@@ -60,6 +61,8 @@ class TrainingConfig:
             self.outer_optimizer = spec["outer_optimizer"]
         if "outer_lr" in spec:
             self.outer_lr = spec["outer_lr"]
+        if "outer_momentum" in spec:
+            self.outer_momentum = spec["outer_momentum"]
         if "num_clients" in spec:
             self.num_clients = spec["num_clients"]
         if "num_local_steps" in spec:
@@ -79,6 +82,9 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument(
         "--test-config", action="store_true", help="Use a test configuration with smaller model and reduced clients/processes"
+    )
+    parser.add_argument(
+        "--experiment", help="Path to a specific experiment spec file to run"
     )
 
     return parser.parse_args()
@@ -109,6 +115,8 @@ def run_experiment(
         config.data_dir = args.data_dir
         config.test_model = args.test_config
         if args.test_config:
+            config.epochs = 2
+            config.optimizer = "sgd"
             config.num_clients = 2
             config.num_processes = 2
         config.device = torch.device(f"cuda:{gpu_id}")
@@ -168,11 +176,20 @@ def main():
     args = parse_args()
     base_config = TrainingConfig()
 
-    # Get available experiments
-    experiment_specs_dir = "experiment_specs"
-    experiment_files = [
-        f for f in os.listdir(experiment_specs_dir) if f.endswith(".json")
-    ]
+    # Get experiments to run
+    if args.experiment:
+        if not os.path.exists(args.experiment):
+            raise ValueError(f"Experiment file {args.experiment} does not exist")
+        experiment_files = [os.path.basename(args.experiment)]
+        experiment_specs_dir = os.path.dirname(args.experiment)
+        if not experiment_specs_dir:
+            experiment_specs_dir = "experiment_specs"
+    else:
+        # Get all available experiments
+        experiment_specs_dir = "experiment_specs"
+        experiment_files = [
+            f for f in os.listdir(experiment_specs_dir) if f.endswith(".json")
+        ]
 
     # Get number of available GPUs and processes
     num_gpus = torch.cuda.device_count()
