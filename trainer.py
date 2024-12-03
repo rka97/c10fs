@@ -3,6 +3,8 @@ import numpy as np
 import time
 import copy
 import torch
+from torch._dynamo import config
+config.suppress_errors = True
 import torch.nn as nn
 import torchvision
 from torch.utils.data import DataLoader, TensorDataset
@@ -227,6 +229,8 @@ class Trainer:
                 if isinstance(module, nn.BatchNorm2d):
                     module.float()
             model_instance.to(self.config.device)
+            # Compile the model for faster training
+            model_instance = torch.compile(model_instance)
             models.append(model_instance)
 
         # Initialize valid_model
