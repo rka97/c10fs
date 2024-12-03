@@ -220,7 +220,7 @@ class Trainer:
         weights = model_lib.patch_whitening(train_dataset.tensors[0][:10000, :, 4:-4, 4:-4])
         models = []
         for _ in range(self.config.num_clients):
-            if self.config.test_model:
+            if self.config.test_config:
                 model_instance = model_lib.SmallResNetBagOfTricks(weights, c_in=3, c_out=10, scale_out=0.125)
             else:
                 model_instance = model_lib.Model(weights, c_in=3, c_out=10, scale_out=0.125)
@@ -229,8 +229,9 @@ class Trainer:
                 if isinstance(module, nn.BatchNorm2d):
                     module.float()
             model_instance.to(self.config.device)
-            # Compile the model for faster training
-            model_instance = torch.compile(model_instance)
+            # Optionally compile the model for faster training
+            if self.config.compile_model:
+                model_instance = torch.compile(model_instance)
             models.append(model_instance)
 
         # Initialize valid_model
