@@ -6,29 +6,59 @@ import torchvision
 import model
 
 
-def train(seed=0):
+class TrainConfig:
+    def __init__(self, seed=0, max_grad_norm=None, use_lr_warmup=True, separate_clipping=True):
+        self.seed = seed
+        self.max_grad_norm = max_grad_norm
+        self.use_lr_warmup = use_lr_warmup
+        self.separate_clipping = separate_clipping
+        self.epochs = 4
+        self.batch_size = 512
+        self.momentum = 0.9
+        self.weight_decay = 0.256
+        self.weight_decay_bias = 0.004
+        self.ema_update_freq = 5
+        self.ema_rho = 0.99 ** self.ema_update_freq
+        self.base_lr = 2e-3
+        self.final_lr = 2e-4
+
+def train(config=None):
+    if config is None:
+        config = TrainConfig()
+    
+    # Lists to store metrics
+    validation_accuracies = []
+    training_losses = []
+    
     # Configurable parameters
-    epochs = 10
-    batch_size = 512
-    momentum = 0.9
-    weight_decay = 0.256
-    weight_decay_bias = 0.004
-    ema_update_freq = 5
-    ema_rho = 0.99 ** ema_update_freq
+    epochs = config.epochs
+    batch_size = config.batch_size
+    momentum = config.momentum
+    weight_decay = config.weight_decay
+    weight_decay_bias = config.weight_decay_bias
+    ema_update_freq = config.ema_update_freq
+    ema_rho = config.ema_rho
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     dtype = torch.float16 if device.type != "cpu" else torch.float32
 
-    # First, the learning rate rises from 0 to 0.002 for the first 194 batches.
-    # Next, the learning rate shrinks down to 0.0002 over the next 582 batches.
-    lr_schedule = torch.cat([
-        torch.linspace(0e+0, 2e-3, 194),
-        torch.linspace(2e-3, 2e-4, 582),
-    ])
+    # Create learning rate schedule
+    if config.use_lr_warmup:
+        # Learning rate warmup followed by decay
+        lr_schedule = torch.cat([
+            torch.linspace(0, config.base_lr, 194),
+            torch.linspace(config.base_lr, config.final_lr, 582),
+        ])
+    else:
+        # Constant learning rate followed by decay
+        lr_schedule = torch.cat([
+            torch.ones(194) * config.base_lr / 3,
+            torch.linspace(config.base_lr / 3, config.final_lr, 582),
+        ])
 
     lr_schedule_bias = 64.0 * lr_schedule
 
     # Print information about hardware on first run
-    if seed == 0:
+    if config.seed == 0:
         if device.type == "cuda":
             print("Device :", torch.cuda.get_device_name(device.index))
 
@@ -39,7 +69,7 @@ def train(seed=0):
     start_time = time.perf_counter()
 
     # Set random seed to increase chance of reproducability
-    torch.manual_seed(seed)
+    torch.manual_seed(config.seed)
 
     # Setting cudnn.benchmark to True hampers reproducability, but is faster
     torch.backends.cudnn.benchmark = True
@@ -82,7 +112,7 @@ def train(seed=0):
     print(f"Preprocessing: {time.perf_counter() - start_time:.2f} seconds")
 
     # Train and validate
-    print("\nepoch    batch    train time [sec]    validation accuracy")
+    print("\nepoch    batch    train time [sec]    validation accuracy    avg train loss")
     train_time = 0.0
     batch_count = 0
     for epoch in range(1, epochs + 1):
@@ -124,8 +154,22 @@ def train(seed=0):
             logits = train_model(inputs)
 
             loss = model.label_smoothing_loss(logits, target, alpha=0.2)
+            loss_value = loss.mean().item()
+            loss_values = []
+            loss_values.append(loss_value)
 
             loss.sum().backward()
+            
+            # Optional gradient clipping
+            if config.max_grad_norm is not None:
+                if config.separate_clipping:
+                    # Clip each parameter separately
+                    for param in train_model.parameters():
+                        if param.grad is not None:
+                            torch.nn.utils.clip_grad_norm_(param, config.max_grad_norm)
+                else:
+                    # Clip all parameters together
+                    torch.nn.utils.clip_grad_norm_(train_model.parameters(), config.max_grad_norm)
 
             lr_index = min(batch_count, len(lr_schedule) - 1)
             lr = lr_schedule[lr_index]
@@ -167,9 +211,14 @@ def train(seed=0):
         # Accuracy is average number of correct predictions
         valid_acc = torch.mean(torch.cat(valid_correct)).item()
 
-        print(f"{epoch:5} {batch_count:8d} {train_time:19.2f} {valid_acc:22.4f}")
+        # Store metrics
+        validation_accuracies.append(valid_acc)
+        avg_loss = sum(loss_values) / len(loss_values) if loss_values else 0
+        training_losses.append(avg_loss)
+        
+        print(f"{epoch:5} {batch_count:8d} {train_time:19.2f} {valid_acc:22.4f} {avg_loss:16.4f}")
 
-    return valid_acc
+    return validation_accuracies, training_losses
 
 def preprocess_data(data, device, dtype):
     # Convert to torch float16 tensor
@@ -186,7 +235,7 @@ def preprocess_data(data, device, dtype):
     return data
 
 
-def load_cifar10(device, dtype, data_dir="~/data"):
+def load_cifar10(device, dtype, data_dir="/run/media/robo/Data/datasets"):
     train = torchvision.datasets.CIFAR10(root=data_dir, download=True)
     valid = torchvision.datasets.CIFAR10(root=data_dir, train=False)
 
