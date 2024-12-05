@@ -3,7 +3,9 @@ import numpy as np
 import time
 import copy
 import torch
+from schedulefree import SGDScheduleFree
 from torch._dynamo import config
+
 config.suppress_errors = True
 import torch.nn as nn
 import torchvision
@@ -14,6 +16,7 @@ import model as model_lib
 
 def _to_numpy(x):
     return [y.item() if torch.is_tensor(y) else y for y in x]
+
 
 class CifarTransform:
     def __init__(self, crop_size=(32, 32)):
@@ -67,6 +70,13 @@ class Trainer:
                     ),
                 ]
             )
+        elif optimizer_name == "schedulefree":
+            return torch.cat(
+                [self.config.outer_lr]
+                * (self.config.warmup_steps + self.config.decay_steps)
+            )
+        else:
+            raise ValueError(f"Unknown optimizer: {optimizer_name}")
 
     def preprocess_data(self, data):
         data = torch.tensor(data, device=self.config.device).to(self.config.dtype)
@@ -107,7 +117,9 @@ class Trainer:
             shuffle=False,
         )
 
-        self.epoch_length = len(train_data) // (self.config.batch_size * self.config.num_clients)
+        self.epoch_length = len(train_data) // (
+            self.config.batch_size * self.config.num_clients
+        )
         print(f"Epoch length: {self.epoch_length}")
 
         return train_dataset
@@ -144,9 +156,22 @@ class Trainer:
         if self.config.outer_optimizer == "sgd":
             return torch.optim.SGD(model.parameters(), lr=self.config.outer_lr)
         elif self.config.outer_optimizer == "sgd_nesterov":
-            return torch.optim.SGD(model.parameters(), lr=self.config.outer_lr, momentum=self.config.outer_momentum, nesterov=True)
+            return torch.optim.SGD(
+                model.parameters(),
+                lr=self.config.outer_lr,
+                momentum=self.config.outer_momentum,
+                nesterov=True,
+            )
         elif self.config.outer_optimizer == "adamw":
             return torch.optim.AdamW(model.parameters(), lr=self.config.outer_lr)
+        elif self.config.outer_optimizer == "schedulefree":
+            opt = SGDScheduleFree(
+                model.parameters(),
+                lr=self.config.outer_lr,
+                momentum=self.config.momentum,
+                warmup_steps=self.config.warmup_steps
+            )
+            return opt
         else:
             raise ValueError(f"Unknown outer optimizer: {self.config.outer_optimizer}")
 
@@ -169,7 +194,9 @@ class Trainer:
         """Apply the outer optimization update"""
         for param, delta in zip(model.parameters(), delta_params):
             if param.requires_grad:
-                param.grad = -delta  # Negative because we want to move in the delta direction
+                param.grad = (
+                    -delta
+                )  # Negative because we want to move in the delta direction
 
     def perform_local_steps(self, model, optimizer, num_steps, batch_count):
         """Perform local training steps for a single client
@@ -194,9 +221,8 @@ class Trainer:
                 self.train_iterator = iter(self.train_loader)
                 data, target = next(self.train_iterator)
 
-
             # Update learning rate
-            lr = self._update_lr(optimizer, batch_count+h)
+            lr = self._update_lr(optimizer, batch_count + h)
             learning_rates.append(lr)
 
             data, target = self.transform((data, target))
@@ -219,13 +245,19 @@ class Trainer:
 
         # Initialize dataset and models for each client
         train_dataset = self.prepare_data()
-        weights = model_lib.patch_whitening(train_dataset.tensors[0][:10000, :, 4:-4, 4:-4])
+        weights = model_lib.patch_whitening(
+            train_dataset.tensors[0][:10000, :, 4:-4, 4:-4]
+        )
         models = []
         for _ in range(self.config.num_clients):
             if self.config.test_config:
-                model_instance = model_lib.SmallResNetBagOfTricks(weights, c_in=3, c_out=10, scale_out=0.125)
+                model_instance = model_lib.SmallResNetBagOfTricks(
+                    weights, c_in=3, c_out=10, scale_out=0.125
+                )
             else:
-                model_instance = model_lib.Model(weights, c_in=3, c_out=10, scale_out=0.125)
+                model_instance = model_lib.Model(
+                    weights, c_in=3, c_out=10, scale_out=0.125
+                )
             model_instance.to(self.config.dtype)
             for module in model_instance.modules():
                 if isinstance(module, nn.BatchNorm2d):
@@ -280,20 +312,24 @@ class Trainer:
 
             # Create main iterator
             self.train_iterator = iter(self.train_loader)
-
+            if self.config.outer_optimizer == "schedulefree":
+                outer_opt.train()
             for _ in range(self.epoch_length):
                 # Store previous round's parameters
-                prev_params = [param.detach().clone() for param in models[0].parameters()]
+                prev_params = [
+                    param.detach().clone() for param in models[0].parameters()
+                ]
 
                 # Perform local steps for each client
-                all_step_losses = np.zeros((self.config.num_clients, self.config.local_steps))
-                all_learning_rates = np.zeros((self.config.num_clients, self.config.local_steps))
+                all_step_losses = np.zeros(
+                    (self.config.num_clients, self.config.local_steps)
+                )
+                all_learning_rates = np.zeros(
+                    (self.config.num_clients, self.config.local_steps)
+                )
                 for k, (model, optimizer) in enumerate(zip(models, optimizers)):
                     step_losses, models[k], learning_rates = self.perform_local_steps(
-                        model,
-                        optimizer,
-                        self.config.local_steps,
-                        batch_count
+                        model, optimizer, self.config.local_steps, batch_count
                     )
                     all_step_losses[k, :] = step_losses
                     all_learning_rates[k, :] = learning_rates
@@ -315,7 +351,9 @@ class Trainer:
                 # Synchronize all models to the result of outer optimization
                 with torch.no_grad():
                     for model in models[1:]:
-                        for p_target, p_source in zip(model.parameters(), models[0].parameters()):
+                        for p_target, p_source in zip(
+                            model.parameters(), models[0].parameters()
+                        ):
                             p_target.copy_(p_source)
 
                 if batch_count % self.config.ema_update_freq == 0:
@@ -330,7 +368,10 @@ class Trainer:
 
             # Validation
             valid_correct = []
+
             models[0].eval()
+            if self.config.outer_optimizer == "schedulefree":
+                outer_opt.eval()
             with torch.no_grad():
                 for data, target in self.valid_loader:
                     data, target = data.to(self.config.device), target.to(
