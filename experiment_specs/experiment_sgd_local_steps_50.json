@@ -1,5 +1,0 @@
-{
-    "num_local_steps": 50,
-    "outer_optimizer": "sgd",
-    "outer_lr": [0.1, 0.2, 0.7, 0.9, 1.0, 2.0, 3.0, 4.0, 10.0]
-}

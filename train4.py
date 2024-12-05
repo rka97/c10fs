@@ -82,6 +82,10 @@ def parse_args():
     parser.add_argument(
         "--experiment", help="Path to a specific experiment spec file to run"
     )
+    parser.add_argument(
+        "--experiment-dir", default="experiment_specs",
+        help="Directory containing experiment specification files"
+    )
 
     return parser.parse_args()
 
@@ -183,7 +187,7 @@ def main():
                 experiment_specs.append(spec)
     else:
         # Get all available experiments
-        experiment_specs_dir = "experiment_specs"
+        experiment_specs_dir = args.experiment_dir
         for f in os.listdir(experiment_specs_dir):
             if f.endswith(".json"):
                 with open(os.path.join(experiment_specs_dir, f), 'r') as spec_file:
